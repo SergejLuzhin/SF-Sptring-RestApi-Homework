@@ -4,15 +4,15 @@ import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 
 /**
- * Entry point for the Booking Service.
+ * Точка входа сервиса бронирования.
  */
 @SpringBootApplication
 public class BookingServiceApplication {
 
     /**
-     * Starts the Booking Service.
+     * Запускает сервис бронирования.
      *
-     * @param args command-line arguments
+     * @param args аргументы командной строки
      */
     public static void main(String[] args) {
         SpringApplication.run(BookingServiceApplication.class, args);

@@ -5,16 +5,16 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.cloud.netflix.eureka.server.EnableEurekaServer;
 
 /**
- * Entry point for the Eureka service registry.
+ * Точка входа сервера регистрации и обнаружения сервисов Eureka.
  */
 @EnableEurekaServer
 @SpringBootApplication
 public class EurekaServerApplication {
 
     /**
-     * Starts the Eureka Server application.
+     * Запускает приложение Eureka Server.
      *
-     * @param args command-line arguments
+     * @param args аргументы командной строки
      */
     public static void main(String[] args) {
         SpringApplication.run(EurekaServerApplication.class, args);

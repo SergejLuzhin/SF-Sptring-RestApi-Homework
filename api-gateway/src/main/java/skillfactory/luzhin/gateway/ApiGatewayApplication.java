@@ -4,15 +4,15 @@ import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 
 /**
- * Entry point for the API Gateway application.
+ * Точка входа API Gateway.
  */
 @SpringBootApplication
 public class ApiGatewayApplication {
 
     /**
-     * Starts the API Gateway application.
+     * Запускает приложение API Gateway.
      *
-     * @param args command-line arguments
+     * @param args аргументы командной строки
      */
     public static void main(String[] args) {
         SpringApplication.run(ApiGatewayApplication.class, args);

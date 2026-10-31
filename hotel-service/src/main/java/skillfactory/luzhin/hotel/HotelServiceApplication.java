@@ -4,15 +4,15 @@ import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 
 /**
- * Entry point for the Hotel Management Service.
+ * Точка входа сервиса управления отелями.
  */
 @SpringBootApplication
 public class HotelServiceApplication {
 
     /**
-     * Starts the Hotel Management Service.
+     * Запускает сервис управления отелями.
      *
-     * @param args command-line arguments
+     * @param args аргументы командной строки
      */
     public static void main(String[] args) {
         SpringApplication.run(HotelServiceApplication.class, args);
