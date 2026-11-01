@@ -4,9 +4,27 @@ server:
 spring:
   application:
     name: api-gateway
+  cloud:
+    gateway:
+      server:
+        webflux:
+          discovery:
+            locator:
+              enabled: false
+          routes:
+            - id: hotel-service-public
+              uri: lb://hotel-service
+              predicates:
+                - Path=/api/hotels,/api/hotels/{hotelId},/api/rooms,/api/rooms/recommend,/api/rooms/{roomId}
+            - id: booking-service-public
+              uri: lb://booking-service
+              predicates:
+                - Path=/user,/user/register,/user/auth,/booking,/booking/{bookingId},/bookings
 
 eureka:
   client:
+    register-with-eureka: true
+    fetch-registry: true
     service-url:
       defaultZone: http://localhost:8761/eureka/
 
