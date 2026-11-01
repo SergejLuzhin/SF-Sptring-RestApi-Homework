@@ -11,6 +11,7 @@ import skillfactory.luzhin.booking.entity.User;
 import skillfactory.luzhin.booking.exception.BusinessConflictException;
 import skillfactory.luzhin.booking.exception.ResourceNotFoundException;
 import skillfactory.luzhin.booking.mapper.UserMapper;
+import skillfactory.luzhin.booking.repository.BookingRepository;
 import skillfactory.luzhin.booking.repository.UserRepository;
 
 /**
@@ -22,6 +23,7 @@ import skillfactory.luzhin.booking.repository.UserRepository;
 public class UserService {
 
     private final UserRepository userRepository;
+    private final BookingRepository bookingRepository;
     private final PasswordEncoder passwordEncoder;
     private final UserMapper userMapper;
 
@@ -62,12 +64,15 @@ public class UserService {
     }
 
     /**
-     * Удаляет пользователя по идентификатору.
+     * Удаляет пользователя по идентификатору при отсутствии истории бронирований.
      *
      * @param id идентификатор пользователя
      */
     public void delete(Long id) {
         User user = findById(id);
+        if (bookingRepository.existsByUserId(id)) {
+            throw new BusinessConflictException("User with booking history cannot be deleted");
+        }
         userRepository.delete(user);
     }
 

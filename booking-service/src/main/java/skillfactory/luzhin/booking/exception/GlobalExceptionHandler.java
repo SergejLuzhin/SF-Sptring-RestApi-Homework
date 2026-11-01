@@ -118,6 +118,36 @@ public class GlobalExceptionHandler {
     }
 
     /**
+     * Обрабатывает некорректные бизнес-параметры запроса.
+     *
+     * @param exception ошибка запроса
+     * @param request HTTP-запрос
+     * @return ответ с кодом 400
+     */
+    @ExceptionHandler(InvalidRequestException.class)
+    public ResponseEntity<ProblemDetail> handleInvalidRequest(
+            InvalidRequestException exception,
+            HttpServletRequest request
+    ) {
+        return response(HttpStatus.BAD_REQUEST, exception.getMessage(), request);
+    }
+
+    /**
+     * Обрабатывает невозможность безопасно завершить распределённую операцию.
+     *
+     * @param exception ошибка доступности удалённого сервиса
+     * @param request HTTP-запрос
+     * @return ответ с кодом 503
+     */
+    @ExceptionHandler(ServiceUnavailableException.class)
+    public ResponseEntity<ProblemDetail> handleServiceUnavailable(
+            ServiceUnavailableException exception,
+            HttpServletRequest request
+    ) {
+        return response(HttpStatus.SERVICE_UNAVAILABLE, exception.getMessage(), request);
+    }
+
+    /**
      * Обрабатывает нарушение ограничений базы данных.
      *
      * @param exception ошибка целостности данных
