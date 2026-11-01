@@ -4,7 +4,7 @@
 
 Это учебная распределённая система бронирования отелей на Spring Boot. Репозиторий представляет собой многомодульный Maven-проект из четырёх самостоятельных Spring Boot-приложений: Eureka Server, API Gateway, Hotel Management Service и Booking Service.
 
-Важно различать целевой контракт и текущую реализацию. Согласно `what-was-done.md`, завершены пункты 1–6 плана: каркас приложений, Eureka и Gateway, публичный Hotel Service с тестами, пользователи Booking Service, регистрация и вход с выпуском JWT, администрирование пользователей и их тесты. Следующий этап — самостоятельная проверка JWT сервисами и разграничение ролей. Бронирования, внутренние confirm/release, Resource Server и OpenAPI пока отсутствуют. Описанные в `README.md` бизнес-эндпойнты являются нормативным контрактом: реализованы только операции, перечисленные в журнале прогресса.
+Важно различать целевой контракт и текущую реализацию. Реализованы каркас приложений, Eureka и Gateway, публичный Hotel Service, пользователи Booking Service, регистрация и вход с выпуском JWT, администрирование пользователей, самостоятельная проверка JWT сервисами и разграничение ролей. Следующий этап — локальная модель бронирований. Бронирования, внутренние confirm/release и OpenAPI пока отсутствуют. Описанные в `README.md` бизнес-эндпойнты являются нормативным контрактом: внутренние пути уже защищены правилами безопасности, но их контроллеры будут добавлены на последующих этапах.
 
 Основные документы:
 
@@ -72,7 +72,7 @@ Hotel Service и Booking Service имеют независимые in-memory H2:
 
 ## Организация кода
 
-Eureka Server и API Gateway пока содержат главный класс и `application.yml`. Hotel Service и Booking Service содержат слои `controller`, `service`, `repository`, `entity`, `dto`, `mapper` и `exception`; Booking также содержит `config`. Оба бизнес-сервиса имеют тесты в `src/test`. Корневой каталог `src/` не является отдельным модулем и не содержит исходников. Фактическая структура:
+Eureka Server и API Gateway пока содержат главный класс и `application.yml`. Hotel Service и Booking Service содержат слои `controller`, `service`, `repository`, `entity`, `dto`, `mapper`, `config` и `exception`. Оба бизнес-сервиса имеют тесты в `src/test`. Корневой каталог `src/` не является отдельным модулем и не содержит исходников. Фактическая структура:
 
 ```text
 SpringFrameWorkHomeWork/
@@ -144,7 +144,7 @@ curl http://localhost:8082/actuator/health
 
 ## Тестирование
 
-Всего реализованы 53 автоматические проверки: 39 в Hotel Service и 14 в Booking Service. Используются JUnit 5, MockMvc, AssertJ, реальные H2 и профили `test` без Eureka. Тесты покрывают CRUD, доступность, рекомендации, регистрацию, вход, BCrypt, claims JWT и администрирование пользователей. В Eureka Server и API Gateway тесты пока отсутствуют.
+Всего реализованы 69 автоматических проверок: 48 в Hotel Service и 21 в Booking Service. Используются JUnit 5, MockMvc, AssertJ, Spring Security Test, реальные H2 и профили `test` без Eureka. Тесты покрывают CRUD, доступность, рекомендации, регистрацию, вход, BCrypt, claims JWT, администрирование пользователей, проверку подписи/issuer/срока действия токена и ролевые правила. В Eureka Server и API Gateway тесты пока отсутствуют.
 
 Целевая стратегия из `homework-plan.md`:
 
@@ -159,7 +159,7 @@ curl http://localhost:8082/actuator/health
 
 ## Безопасность
 
-В Booking Service реализованы BCrypt и выпуск пользовательского JWT на один час; OAuth2 Resource Server и правила авторизации ещё не настроены. Целевая модель зафиксирована в README и плане:
+В Booking Service реализованы BCrypt, выпуск пользовательского JWT на один час и служебного INTERNAL JWT на пять минут. В Booking и Hotel настроены stateless OAuth2 Resource Server, проверка HS256-подписи, issuer и срока действия, преобразование claim `role` в authorities и ошибки 401/403 в формате ProblemDetail. Действует модель из README и плана:
 
 - Роли `USER`, `ADMIN` и `INTERNAL`; публичная регистрация создаёт только `USER`.
 - Пользовательский JWT действует один час; пароли хранятся только как BCrypt-хеши.

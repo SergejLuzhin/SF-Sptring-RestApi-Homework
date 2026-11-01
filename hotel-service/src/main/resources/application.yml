@@ -29,3 +29,8 @@ management:
     web:
       exposure:
         include: health,info
+
+security:
+  jwt:
+    secret: ${JWT_SECRET:local-booking-service-jwt-secret-change-me-32-bytes}
+    issuer: ${JWT_ISSUER:booking-service}

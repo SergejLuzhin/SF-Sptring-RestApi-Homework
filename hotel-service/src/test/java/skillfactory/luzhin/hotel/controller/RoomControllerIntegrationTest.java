@@ -41,6 +41,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @AutoConfigureMockMvc
 @ActiveProfiles("test")
 @Transactional
+@org.springframework.security.test.context.support.WithMockUser(roles = {"USER", "ADMIN"})
 class RoomControllerIntegrationTest {
 
     private static final String DATE_PARAMETERS = "startDate=2026-11-10&endDate=2026-11-15";

@@ -37,6 +37,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @AutoConfigureMockMvc
 @ActiveProfiles("test")
 @Transactional
+@org.springframework.security.test.context.support.WithMockUser(roles = {"USER", "ADMIN"})
 class HotelControllerIntegrationTest {
 
     @Autowired
