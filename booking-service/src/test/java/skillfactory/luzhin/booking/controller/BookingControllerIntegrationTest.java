@@ -87,7 +87,7 @@ class BookingControllerIntegrationTest {
      */
     @BeforeEach
     void setUpHotelClient() {
-        when(hotelServiceClient.findRecommendedRoomId(anyString(), any(), any()))
+        when(hotelServiceClient.findRecommendedRoomId(anyString(), any(), any(), any()))
                 .thenReturn(Optional.of(20L));
     }
 
@@ -278,7 +278,7 @@ class BookingControllerIntegrationTest {
     @Test
     void shouldRejectAutoSelectWhenNoRoomsAreAvailable() throws Exception {
         User user = createUser("user@example.com", UserRole.USER);
-        when(hotelServiceClient.findRecommendedRoomId(anyString(), any(), any()))
+        when(hotelServiceClient.findRecommendedRoomId(anyString(), any(), any(), any()))
                 .thenReturn(Optional.empty());
 
         mockMvc.perform(createBookingRequest(

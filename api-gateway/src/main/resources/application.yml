@@ -21,6 +21,10 @@ spring:
               predicates:
                 - Path=/user,/user/register,/user/auth,/booking,/booking/{bookingId},/bookings
 
+logging:
+  pattern:
+    console: "%d{yyyy-MM-dd'T'HH:mm:ss.SSSXXX} %-5level [%thread] [correlationId=%X{correlationId:-}] %logger{36} - %msg%n"
+
 eureka:
   client:
     register-with-eureka: true

@@ -5,6 +5,9 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.system.CapturedOutput;
+import org.springframework.boot.test.system.OutputCaptureExtension;
+import org.junit.jupiter.api.extension.ExtendWith;
 import org.springframework.http.MediaType;
 import org.springframework.security.test.context.support.WithMockUser;
 import org.springframework.test.context.ActiveProfiles;
@@ -30,6 +33,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  */
 @SpringBootTest
 @AutoConfigureMockMvc
+@ExtendWith(OutputCaptureExtension.class)
 @ActiveProfiles("test")
 @Transactional
 @WithMockUser(roles = "INTERNAL")
@@ -180,6 +184,31 @@ class RoomReservationControllerIntegrationTest {
 
         assertThat(roomReservationRepository.count()).isZero();
         assertThat(roomRepository.findById(room.getId()).orElseThrow().getTimesBooked()).isZero();
+    }
+
+    /**
+     * Проверяет correlation ID и идентификаторы брони в логах confirm и release.
+     *
+     * @param output захваченный консольный журнал
+     * @throws Exception ошибка выполнения MockMvc-запроса
+     */
+    @Test
+    void shouldLogDistributedIdentifiersForConfirmAndRelease(CapturedOutput output) throws Exception {
+        UUID requestId = UUID.randomUUID();
+
+        mockMvc.perform(confirm(room.getId(), 25L, requestId)
+                        .header("X-Correlation-ID", "distributed-hotel"))
+                .andExpect(status().isOk());
+        mockMvc.perform(release(room.getId(), 25L, requestId, "COMPENSATION")
+                        .header("X-Correlation-ID", "distributed-hotel"))
+                .andExpect(status().isOk());
+
+        assertThat(output)
+                .contains("correlationId=distributed-hotel")
+                .contains("requestId=" + requestId)
+                .contains("bookingId=25")
+                .contains("Room reservation HELD")
+                .contains("Room reservation RELEASED");
     }
 
     /**

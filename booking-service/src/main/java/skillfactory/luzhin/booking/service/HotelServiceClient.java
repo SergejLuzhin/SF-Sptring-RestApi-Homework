@@ -1,6 +1,9 @@
 package skillfactory.luzhin.booking.service;
 
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.slf4j.MDC;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatusCode;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.ResourceAccessException;
@@ -20,11 +23,13 @@ import java.time.LocalDate;
 import java.util.Arrays;
 import java.util.Optional;
 import java.util.Set;
+import java.util.UUID;
 
 /**
  * Выполняет вызовы Hotel Service для подбора, блокировки и освобождения номеров.
  */
 @Component
+@Slf4j
 @RequiredArgsConstructor
 public class HotelServiceClient {
 
@@ -38,11 +43,17 @@ public class HotelServiceClient {
      * Возвращает первый номер из отсортированных рекомендаций Hotel Service.
      *
      * @param userToken JWT пользователя для доступа к публичным рекомендациям
+     * @param requestId идентификатор исходной операции бронирования
      * @param startDate дата заезда
      * @param endDate дата выезда
      * @return идентификатор рекомендованного номера или пустой результат
      */
-    public Optional<Long> findRecommendedRoomId(String userToken, LocalDate startDate, LocalDate endDate) {
+    public Optional<Long> findRecommendedRoomId(
+            String userToken,
+            UUID requestId,
+            LocalDate startDate,
+            LocalDate endDate
+    ) {
         try {
             HotelRoomResponse[] rooms = hotelServiceRestClient.get()
                     .uri(uriBuilder -> uriBuilder
@@ -50,7 +61,10 @@ public class HotelServiceClient {
                             .queryParam("startDate", startDate)
                             .queryParam("endDate", endDate)
                             .build())
-                    .headers(headers -> headers.setBearerAuth(userToken))
+                    .headers(headers -> {
+                        headers.setBearerAuth(userToken);
+                        addObservabilityHeaders(headers, requestId, null);
+                    })
                     .retrieve()
                     .body(HotelRoomResponse[].class);
             if (rooms == null) {
@@ -73,9 +87,12 @@ public class HotelServiceClient {
      * @param request параметры блокировки
      */
     public void confirmAvailability(Long roomId, ConfirmAvailabilityRequest request) {
-        executeWithRetries(properties.confirm(), roomId, () -> hotelServiceRestClient.post()
+        executeWithRetries("confirm", properties.confirm(), roomId, () -> hotelServiceRestClient.post()
                 .uri("/api/rooms/{roomId}/confirm-availability", roomId)
-                .headers(headers -> headers.setBearerAuth(internalJwtService.issueToken()))
+                .headers(headers -> {
+                    headers.setBearerAuth(internalJwtService.issueToken());
+                    addObservabilityHeaders(headers, request.requestId(), request.bookingId());
+                })
                 .body(request)
                 .retrieve()
                 .toBodilessEntity());
@@ -88,36 +105,80 @@ public class HotelServiceClient {
      * @param request параметры освобождения
      */
     public void release(Long roomId, ReleaseReservationRequest request) {
-        executeWithRetries(properties.release(), null, () -> hotelServiceRestClient.post()
+        executeWithRetries("release", properties.release(), null, () -> hotelServiceRestClient.post()
                 .uri("/api/rooms/{roomId}/release", roomId)
-                .headers(headers -> headers.setBearerAuth(internalJwtService.issueToken()))
+                .headers(headers -> {
+                    headers.setBearerAuth(internalJwtService.issueToken());
+                    addObservabilityHeaders(headers, request.requestId(), request.bookingId());
+                })
                 .body(request)
                 .retrieve()
                 .toBodilessEntity());
     }
 
     /**
+     * Передаёт correlation ID и идентификаторы операции во внутренний HTTP-запрос.
+     *
+     * @param headers заголовки исходящего запроса
+     * @param requestId идентификатор идемпотентности
+     * @param bookingId идентификатор бронирования
+     */
+    private void addObservabilityHeaders(HttpHeaders headers, UUID requestId, Long bookingId) {
+        String correlationId = MDC.get("correlationId");
+        if (correlationId != null) {
+            headers.set("X-Correlation-ID", correlationId);
+        }
+        headers.set("X-Request-ID", requestId.toString());
+        if (bookingId != null) {
+            headers.set("X-Booking-ID", bookingId.toString());
+        }
+    }
+
+    /**
      * Повторяет идемпотентный вызов только после временных сбоев.
      *
+     * @param operation название распределённой операции
      * @param retry настройки числа попыток и задержек
      * @param roomId идентификатор номера для преобразования ошибки 404
      * @param call идемпотентный HTTP-вызов
      */
-    private void executeWithRetries(HotelClientProperties.Retry retry, Long roomId, Runnable call) {
+    private void executeWithRetries(
+            String operation,
+            HotelClientProperties.Retry retry,
+            Long roomId,
+            Runnable call
+    ) {
         for (int attempt = 1; ; attempt++) {
+            log.info("Hotel {} attempt started; attempt={}/{}", operation, attempt, retry.maxAttempts());
             try {
                 call.run();
+                log.info("Hotel {} attempt succeeded; attempt={}", operation, attempt);
                 return;
             } catch (RestClientResponseException exception) {
-                if (!RETRYABLE_STATUSES.contains(exception.getStatusCode().value())
-                        || attempt == retry.maxAttempts()) {
+                boolean retryable = RETRYABLE_STATUSES.contains(exception.getStatusCode().value());
+                if (!retryable || attempt == retry.maxAttempts()) {
+                    log.warn(
+                            "Hotel {} failed without further retries; attempt={}, status={}",
+                            operation,
+                            attempt,
+                            exception.getStatusCode().value()
+                    );
                     throw translateResponseError(exception, roomId);
                 }
+                log.warn(
+                        "Hotel {} will be retried; attempt={}, status={}",
+                        operation,
+                        attempt,
+                        exception.getStatusCode().value()
+                );
             } catch (ResourceAccessException exception) {
                 if (attempt == retry.maxAttempts()) {
+                    log.warn("Hotel {} retries exhausted; attempt={}, reason=network_or_timeout", operation, attempt);
                     throw unavailable();
                 }
+                log.warn("Hotel {} will be retried; attempt={}, reason=network_or_timeout", operation, attempt);
             } catch (RestClientException exception) {
+                log.warn("Hotel {} failed without retry; reason={}", operation, exception.getClass().getSimpleName());
                 throw unavailable();
             }
             waitBeforeRetry(retry, attempt);

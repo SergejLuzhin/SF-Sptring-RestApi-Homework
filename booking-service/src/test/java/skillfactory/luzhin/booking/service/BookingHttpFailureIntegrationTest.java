@@ -7,7 +7,11 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.slf4j.MDC;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.system.CapturedOutput;
+import org.springframework.boot.test.system.OutputCaptureExtension;
+import org.junit.jupiter.api.extension.ExtendWith;
 import org.springframework.http.client.SimpleClientHttpRequestFactory;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.test.context.ActiveProfiles;
@@ -42,6 +46,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * Проверяет реальные HTTP-тайм-ауты, повторы и компенсацию через локальную заглушку Hotel Service.
  */
 @SpringBootTest
+@ExtendWith(OutputCaptureExtension.class)
 @ActiveProfiles("test")
 class BookingHttpFailureIntegrationTest {
 
@@ -114,7 +119,7 @@ class BookingHttpFailureIntegrationTest {
      * Проверяет успешный confirm после временных ответов 503 в пределах лимита.
      */
     @Test
-    void shouldConfirmAfterTemporaryFailuresWithinRetryLimit() {
+    void shouldConfirmAfterTemporaryFailuresWithinRetryLimit(CapturedOutput output) {
         UUID requestId = UUID.randomUUID();
         startClient(
                 exchange -> respond(exchange, confirmCalls.incrementAndGet() < 3 ? 503 : 200),
@@ -124,11 +129,24 @@ class BookingHttpFailureIntegrationTest {
                 Duration.ofSeconds(1)
         );
 
-        BookingCreationResult result = createBooking(requestId);
+        MDC.put("correlationId", "distributed-success");
+        BookingCreationResult result;
+        try {
+            result = createBooking(requestId);
+        } finally {
+            MDC.clear();
+        }
 
         assertThat(result.response().status()).isEqualTo(BookingStatus.CONFIRMED);
         assertThat(confirmCalls).hasValue(3);
         assertThat(releaseCalls).hasValue(0);
+        assertThat(output)
+                .contains("correlationId=distributed-success")
+                .contains("requestId=" + requestId)
+                .contains("bookingId=" + result.response().id())
+                .contains("Booking PENDING created")
+                .contains("Hotel confirm will be retried")
+                .contains("Booking CONFIRMED");
     }
 
     /**
@@ -251,7 +269,7 @@ class BookingHttpFailureIntegrationTest {
      * Проверяет видимую ошибку и сохранение PENDING после исчерпания повторов release.
      */
     @Test
-    void shouldExposeCompensationFailureAfterReleaseRetries() {
+    void shouldExposeCompensationFailureAfterReleaseRetries(CapturedOutput output) {
         UUID requestId = UUID.randomUUID();
         startClient(
                 exchange -> {
@@ -267,14 +285,26 @@ class BookingHttpFailureIntegrationTest {
                 Duration.ofSeconds(1)
         );
 
-        assertThatThrownBy(() -> createBooking(requestId))
-                .isInstanceOf(ServiceUnavailableException.class)
-                .hasMessageContaining("compensation failed");
+        MDC.put("correlationId", "distributed-compensation-failure");
+        try {
+            assertThatThrownBy(() -> createBooking(requestId))
+                    .isInstanceOf(ServiceUnavailableException.class)
+                    .hasMessageContaining("compensation failed");
+        } finally {
+            MDC.clear();
+        }
 
         assertThat(confirmCalls).hasValue(1);
         assertThat(releaseCalls).hasValue(3);
+        Long bookingId = bookingRepository.findByRequestId(requestId).orElseThrow().getId();
         assertThat(bookingRepository.findByRequestId(requestId).orElseThrow().getStatus())
                 .isEqualTo(BookingStatus.PENDING);
+        assertThat(output)
+                .contains("correlationId=distributed-compensation-failure")
+                .contains("requestId=" + requestId)
+                .contains("bookingId=" + bookingId)
+                .contains("Hotel release failed without further retries")
+                .contains("Booking compensation failed");
     }
 
     /**

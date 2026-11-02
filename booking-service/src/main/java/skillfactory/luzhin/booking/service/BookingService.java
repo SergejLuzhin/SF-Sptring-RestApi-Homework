@@ -4,6 +4,7 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
+import skillfactory.luzhin.booking.config.MdcScope;
 import skillfactory.luzhin.booking.dto.BookingCreateRequest;
 import skillfactory.luzhin.booking.dto.BookingResponse;
 import skillfactory.luzhin.booking.dto.ConfirmAvailabilityRequest;
@@ -37,33 +38,45 @@ public class BookingService {
      * @return подтверждённая или уже существующая бронь
      */
     public BookingCreationResult create(String subject, String userToken, BookingCreateRequest request) {
-        validateRequest(request);
-        Long userId = parseUserId(subject);
-        var existing = bookingPersistenceService.findExistingBooking(userId, request);
-        if (existing.isPresent()) {
-            return new BookingCreationResult(existing.get(), false);
-        }
+        try (MdcScope ignored = MdcScope.open(request.requestId(), null)) {
+            validateRequest(request);
+            Long userId = parseUserId(subject);
+            var existing = bookingPersistenceService.findExistingBooking(userId, request);
+            if (existing.isPresent()) {
+                BookingResponse booking = existing.get();
+                try (MdcScope bookingScope = MdcScope.open(request.requestId(), booking.id())) {
+                    log.info("Idempotent booking request returned existing result; status={}", booking.status());
+                }
+                return new BookingCreationResult(booking, false);
+            }
 
-        Long roomId = selectRoom(userToken, request);
-        BookingResponse pending;
-        try {
-            pending = bookingPersistenceService.createPending(userId, request, roomId);
-        } catch (DataIntegrityViolationException exception) {
-            return bookingPersistenceService.findExistingBooking(userId, request)
-                    .map(booking -> new BookingCreationResult(booking, false))
-                    .orElseThrow(() -> exception);
-        }
-        try {
-            hotelServiceClient.confirmAvailability(roomId, new ConfirmAvailabilityRequest(
-                    pending.id(),
-                    request.requestId(),
-                    request.startDate(),
-                    request.endDate()
-            ));
-            return new BookingCreationResult(bookingPersistenceService.confirm(pending.id()), true);
-        } catch (RuntimeException confirmationFailure) {
-            compensate(pending, request.requestId());
-            throw confirmationFailure;
+            Long roomId = selectRoom(userToken, request);
+            BookingResponse pending;
+            try {
+                pending = bookingPersistenceService.createPending(userId, request, roomId);
+            } catch (DataIntegrityViolationException exception) {
+                return bookingPersistenceService.findExistingBooking(userId, request)
+                        .map(booking -> new BookingCreationResult(booking, false))
+                        .orElseThrow(() -> exception);
+            }
+            try (MdcScope bookingScope = MdcScope.open(request.requestId(), pending.id())) {
+                log.info("Booking PENDING created; roomId={}", roomId);
+                try {
+                    hotelServiceClient.confirmAvailability(roomId, new ConfirmAvailabilityRequest(
+                            pending.id(),
+                            request.requestId(),
+                            request.startDate(),
+                            request.endDate()
+                    ));
+                    BookingResponse confirmed = bookingPersistenceService.confirm(pending.id());
+                    log.info("Booking CONFIRMED; roomId={}", roomId);
+                    return new BookingCreationResult(confirmed, true);
+                } catch (RuntimeException confirmationFailure) {
+                    log.warn("Booking confirmation failed; reason={}", confirmationFailure.getMessage());
+                    compensate(pending, request.requestId());
+                    throw confirmationFailure;
+                }
+            }
         }
     }
 
@@ -97,23 +110,29 @@ public class BookingService {
     public void cancel(String subject, Long id) {
         Long userId = parseUserId(subject);
         BookingCancellation booking = bookingPersistenceService.findForCancellation(userId, id);
-        if (booking.status() == BookingStatus.CANCELLED) {
-            return;
-        }
-        if (booking.status() == BookingStatus.PENDING) {
-            bookingPersistenceService.cancelPending(userId, id);
-            return;
-        }
+        try (MdcScope ignored = MdcScope.open(booking.requestId(), booking.id())) {
+            if (booking.status() == BookingStatus.CANCELLED) {
+                log.info("Booking cancellation skipped; booking is already CANCELLED");
+                return;
+            }
+            if (booking.status() == BookingStatus.PENDING) {
+                bookingPersistenceService.cancelPending(userId, id);
+                log.info("Pending booking CANCELLED without remote release");
+                return;
+            }
 
-        hotelServiceClient.release(booking.roomId(), new ReleaseReservationRequest(
-                booking.id(),
-                booking.requestId(),
-                ReleaseReason.USER_CANCELLATION
-        ));
-        try {
-            bookingPersistenceService.cancelConfirmed(userId, id);
-        } catch (RuntimeException exception) {
-            throw new ServiceUnavailableException("Hotel room was released but the local booking cancellation failed");
+            hotelServiceClient.release(booking.roomId(), new ReleaseReservationRequest(
+                    booking.id(),
+                    booking.requestId(),
+                    ReleaseReason.USER_CANCELLATION
+            ));
+            try {
+                bookingPersistenceService.cancelConfirmed(userId, id);
+                log.info("Confirmed booking CANCELLED after remote release");
+            } catch (RuntimeException exception) {
+                log.error("Local cancellation failed after remote release", exception);
+                throw new ServiceUnavailableException("Hotel room was released but the local booking cancellation failed");
+            }
         }
     }
 
@@ -128,7 +147,12 @@ public class BookingService {
         if (!request.autoSelect()) {
             return request.roomId();
         }
-        return hotelServiceClient.findRecommendedRoomId(userToken, request.startDate(), request.endDate())
+        return hotelServiceClient.findRecommendedRoomId(
+                        userToken,
+                        request.requestId(),
+                        request.startDate(),
+                        request.endDate()
+                )
                 .orElseThrow(() -> new BusinessConflictException("No rooms are available for the requested dates"));
     }
 
@@ -146,13 +170,9 @@ public class BookingService {
                     ReleaseReason.COMPENSATION
             ));
             bookingPersistenceService.cancelAfterCompensation(pending.id());
+            log.info("Booking compensation completed; status=CANCELLED");
         } catch (RuntimeException compensationFailure) {
-            log.error(
-                    "Booking compensation failed; bookingId={}, requestId={}",
-                    pending.id(),
-                    requestId,
-                    compensationFailure
-            );
+            log.error("Booking compensation failed; booking requires reconciliation", compensationFailure);
             throw new ServiceUnavailableException("Hotel Service compensation failed; booking requires reconciliation");
         }
     }

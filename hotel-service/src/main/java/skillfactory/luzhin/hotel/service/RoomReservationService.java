@@ -1,8 +1,10 @@
 package skillfactory.luzhin.hotel.service;
 
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import skillfactory.luzhin.hotel.config.MdcScope;
 import skillfactory.luzhin.hotel.dto.ConfirmAvailabilityRequest;
 import skillfactory.luzhin.hotel.dto.ReleaseReason;
 import skillfactory.luzhin.hotel.dto.ReleaseReservationRequest;
@@ -25,6 +27,7 @@ import java.util.UUID;
  * Реализует подтверждение доступности и компенсацию занятости номеров.
  */
 @Service
+@Slf4j
 @RequiredArgsConstructor
 public class RoomReservationService {
 
@@ -40,42 +43,49 @@ public class RoomReservationService {
      */
     @Transactional
     public RoomReservationResponse confirmAvailability(Long roomId, ConfirmAvailabilityRequest request) {
-        validateDates(request.startDate(), request.endDate());
-        Optional<RoomReservation> existing = findOperation(request.bookingId(), request.requestId());
-        if (existing.isPresent()) {
-            RoomReservation reservation = existing.get();
-            validateConfirmationMatch(reservation, roomId, request);
+        try (MdcScope ignored = MdcScope.open(request.requestId(), request.bookingId())) {
+            log.info("Confirm availability started; roomId={}", roomId);
+            validateDates(request.startDate(), request.endDate());
+            Optional<RoomReservation> existing = findOperation(request.bookingId(), request.requestId());
+            if (existing.isPresent()) {
+                RoomReservation reservation = existing.get();
+                validateConfirmationMatch(reservation, roomId, request);
+                log.info("Confirm availability returned existing operation; status={}", reservation.getStatus());
+                return toResponse(reservation);
+            }
+
+            Room room = roomRepository.findByIdForUpdate(roomId)
+                    .orElseThrow(() -> new ResourceNotFoundException("Room", roomId));
+            Optional<RoomReservation> existingAfterLock = findOperation(request.bookingId(), request.requestId());
+            if (existingAfterLock.isPresent()) {
+                RoomReservation reservation = existingAfterLock.get();
+                validateConfirmationMatch(reservation, roomId, request);
+                log.info("Confirm availability returned existing operation; status={}", reservation.getStatus());
+                return toResponse(reservation);
+            }
+            if (!room.isAvailable() || roomReservationRepository.existsOverlappingReservation(
+                    roomId,
+                    request.startDate(),
+                    request.endDate()
+            )) {
+                log.warn("Room reservation rejected; roomId={}, reason=unavailable", roomId);
+                throw new BusinessConflictException("Room is not available for the requested dates");
+            }
+
+            RoomReservation reservation = new RoomReservation();
+            reservation.setBookingId(request.bookingId());
+            reservation.setRequestId(request.requestId());
+            reservation.setRoom(room);
+            reservation.setStartDate(request.startDate());
+            reservation.setEndDate(request.endDate());
+            reservation.setStatus(RoomReservationStatus.HELD);
+            reservation.setCreatedAt(Instant.now());
+            roomReservationRepository.save(reservation);
+
+            room.setTimesBooked(room.getTimesBooked() + 1);
+            log.info("Room reservation HELD; roomId={}", roomId);
             return toResponse(reservation);
         }
-
-        Room room = roomRepository.findByIdForUpdate(roomId)
-                .orElseThrow(() -> new ResourceNotFoundException("Room", roomId));
-        Optional<RoomReservation> existingAfterLock = findOperation(request.bookingId(), request.requestId());
-        if (existingAfterLock.isPresent()) {
-            RoomReservation reservation = existingAfterLock.get();
-            validateConfirmationMatch(reservation, roomId, request);
-            return toResponse(reservation);
-        }
-        if (!room.isAvailable() || roomReservationRepository.existsOverlappingReservation(
-                roomId,
-                request.startDate(),
-                request.endDate()
-        )) {
-            throw new BusinessConflictException("Room is not available for the requested dates");
-        }
-
-        RoomReservation reservation = new RoomReservation();
-        reservation.setBookingId(request.bookingId());
-        reservation.setRequestId(request.requestId());
-        reservation.setRoom(room);
-        reservation.setStartDate(request.startDate());
-        reservation.setEndDate(request.endDate());
-        reservation.setStatus(RoomReservationStatus.HELD);
-        reservation.setCreatedAt(Instant.now());
-        roomReservationRepository.save(reservation);
-
-        room.setTimesBooked(room.getTimesBooked() + 1);
-        return toResponse(reservation);
     }
 
     /**
@@ -87,22 +97,27 @@ public class RoomReservationService {
      */
     @Transactional
     public RoomReservationResponse release(Long roomId, ReleaseReservationRequest request) {
-        roomRepository.findByIdForUpdate(roomId);
-        Optional<RoomReservation> existing = findOperation(request.bookingId(), request.requestId());
-        if (existing.isEmpty()) {
-            return new RoomReservationResponse(request.bookingId(), roomId, RoomReservationStatus.RELEASED);
-        }
-
-        RoomReservation reservation = existing.get();
-        validateReleaseMatch(reservation, roomId, request);
-        if (reservation.getStatus() == RoomReservationStatus.HELD) {
-            reservation.setStatus(RoomReservationStatus.RELEASED);
-            if (request.reason() == ReleaseReason.COMPENSATION) {
-                Room room = reservation.getRoom();
-                room.setTimesBooked(Math.max(0, room.getTimesBooked() - 1));
+        try (MdcScope ignored = MdcScope.open(request.requestId(), request.bookingId())) {
+            log.info("Room release started; roomId={}, reason={}", roomId, request.reason());
+            roomRepository.findByIdForUpdate(roomId);
+            Optional<RoomReservation> existing = findOperation(request.bookingId(), request.requestId());
+            if (existing.isEmpty()) {
+                log.info("Room release completed without an existing reservation; roomId={}", roomId);
+                return new RoomReservationResponse(request.bookingId(), roomId, RoomReservationStatus.RELEASED);
             }
+
+            RoomReservation reservation = existing.get();
+            validateReleaseMatch(reservation, roomId, request);
+            if (reservation.getStatus() == RoomReservationStatus.HELD) {
+                reservation.setStatus(RoomReservationStatus.RELEASED);
+                if (request.reason() == ReleaseReason.COMPENSATION) {
+                    Room room = reservation.getRoom();
+                    room.setTimesBooked(Math.max(0, room.getTimesBooked() - 1));
+                }
+            }
+            log.info("Room reservation RELEASED; roomId={}, reason={}", roomId, request.reason());
+            return toResponse(reservation);
         }
-        return toResponse(reservation);
     }
 
     /**
