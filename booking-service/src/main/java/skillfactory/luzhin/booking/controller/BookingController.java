@@ -44,7 +44,7 @@ public class BookingController {
             @Valid @RequestBody BookingCreateRequest request,
             @AuthenticationPrincipal Jwt jwt
     ) {
-        BookingCreationResult result = bookingService.create(jwt.getSubject(), request);
+        BookingCreationResult result = bookingService.create(jwt.getSubject(), jwt.getTokenValue(), request);
         HttpStatus status = result.created() ? HttpStatus.CREATED : HttpStatus.OK;
         return ResponseEntity.status(status).body(result.response());
     }

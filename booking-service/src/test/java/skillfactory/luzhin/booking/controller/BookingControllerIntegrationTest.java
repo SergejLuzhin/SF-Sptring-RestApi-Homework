@@ -1,6 +1,7 @@
 package skillfactory.luzhin.booking.controller;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
@@ -11,6 +12,7 @@ import org.springframework.http.MediaType;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.test.context.ActiveProfiles;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 import org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder;
@@ -18,19 +20,30 @@ import org.springframework.test.web.servlet.request.RequestPostProcessor;
 import org.springframework.transaction.annotation.Transactional;
 import skillfactory.luzhin.booking.dto.BookingCreateRequest;
 import skillfactory.luzhin.booking.dto.BookingResponse;
+import skillfactory.luzhin.booking.dto.ReleaseReason;
 import skillfactory.luzhin.booking.entity.Booking;
 import skillfactory.luzhin.booking.entity.BookingStatus;
 import skillfactory.luzhin.booking.entity.User;
 import skillfactory.luzhin.booking.entity.UserRole;
+import skillfactory.luzhin.booking.exception.BusinessConflictException;
+import skillfactory.luzhin.booking.exception.ServiceUnavailableException;
 import skillfactory.luzhin.booking.repository.BookingRepository;
 import skillfactory.luzhin.booking.repository.UserRepository;
+import skillfactory.luzhin.booking.service.HotelServiceClient;
 
 import java.time.Instant;
 import java.time.LocalDate;
+import java.util.Optional;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.hamcrest.Matchers.containsString;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.jwt;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
@@ -66,13 +79,25 @@ class BookingControllerIntegrationTest {
     @Autowired
     private PasswordEncoder passwordEncoder;
 
+    @MockitoBean
+    private HotelServiceClient hotelServiceClient;
+
     /**
-     * Проверяет создание PENDING-брони с явно выбранным номером.
+     * Настраивает успешный удалённый автоподбор для тестов создания брони.
+     */
+    @BeforeEach
+    void setUpHotelClient() {
+        when(hotelServiceClient.findRecommendedRoomId(anyString(), any(), any()))
+                .thenReturn(Optional.of(20L));
+    }
+
+    /**
+     * Проверяет создание CONFIRMED-брони с явно выбранным номером.
      *
      * @throws Exception ошибка выполнения MockMvc-запроса
      */
     @Test
-    void shouldCreatePendingBooking() throws Exception {
+    void shouldCreateConfirmedBooking() throws Exception {
         User user = createUser("user@example.com", UserRole.USER);
         UUID requestId = UUID.randomUUID();
 
@@ -83,13 +108,13 @@ class BookingControllerIntegrationTest {
                 .andExpect(jsonPath("$.roomId").value(10))
                 .andExpect(jsonPath("$.startDate").value("2026-11-10"))
                 .andExpect(jsonPath("$.endDate").value("2026-11-15"))
-                .andExpect(jsonPath("$.status").value("PENDING"))
+                .andExpect(jsonPath("$.status").value("CONFIRMED"))
                 .andExpect(jsonPath("$.createdAt").isString());
 
         Booking saved = bookingRepository.findByRequestId(requestId).orElseThrow();
-        assertThat(saved.getStatus()).isEqualTo(BookingStatus.PENDING);
+        assertThat(saved.getStatus()).isEqualTo(BookingStatus.CONFIRMED);
         assertThat(saved.getAutoSelect()).isFalse();
-        assertThat(saved.getCreatedAt()).isEqualTo(saved.getUpdatedAt());
+        verify(hotelServiceClient).confirmAvailability(eq(10L), any());
     }
 
     /**
@@ -104,13 +129,14 @@ class BookingControllerIntegrationTest {
 
         MvcResult result = mockMvc.perform(createBookingRequest(user, request(requestId, 10L, START_DATE, END_DATE, true)))
                 .andExpect(status().isCreated())
-                .andExpect(jsonPath("$.status").value("PENDING"))
+                .andExpect(jsonPath("$.status").value("CONFIRMED"))
                 .andReturn();
 
-        assertThat(readResponse(result).roomId()).isNull();
+        assertThat(readResponse(result).roomId()).isEqualTo(20L);
         Booking saved = bookingRepository.findByRequestId(requestId).orElseThrow();
-        assertThat(saved.getRoomId()).isNull();
+        assertThat(saved.getRoomId()).isEqualTo(20L);
         assertThat(saved.getAutoSelect()).isTrue();
+        verify(hotelServiceClient).confirmAvailability(eq(20L), any());
     }
 
     /**
@@ -131,9 +157,10 @@ class BookingControllerIntegrationTest {
         mockMvc.perform(createBookingRequest(user, request))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.id").value(bookingId))
-                .andExpect(jsonPath("$.status").value("PENDING"));
+                .andExpect(jsonPath("$.status").value("CONFIRMED"));
 
         assertThat(bookingRepository.count()).isEqualTo(1);
+        verify(hotelServiceClient).confirmAvailability(eq(10L), any());
     }
 
     /**
@@ -241,6 +268,91 @@ class BookingControllerIntegrationTest {
                 .andExpect(jsonPath("$.detail").value("startDate must be earlier than endDate"));
 
         assertThat(bookingRepository.count()).isZero();
+    }
+
+    /**
+     * Проверяет отказ без создания PENDING, если рекомендации не содержат номеров.
+     *
+     * @throws Exception ошибка выполнения MockMvc-запроса
+     */
+    @Test
+    void shouldRejectAutoSelectWhenNoRoomsAreAvailable() throws Exception {
+        User user = createUser("user@example.com", UserRole.USER);
+        when(hotelServiceClient.findRecommendedRoomId(anyString(), any(), any()))
+                .thenReturn(Optional.empty());
+
+        mockMvc.perform(createBookingRequest(
+                        user,
+                        request(UUID.randomUUID(), null, START_DATE, END_DATE, true)
+                ))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.detail").value("No rooms are available for the requested dates"));
+
+        assertThat(bookingRepository.count()).isZero();
+    }
+
+    /**
+     * Проверяет компенсацию и отмену PENDING при бизнес-конфликте confirm.
+     *
+     * @throws Exception ошибка выполнения MockMvc-запроса
+     */
+    @Test
+    void shouldCompensatePendingBookingAfterConfirmConflict() throws Exception {
+        User user = createUser("user@example.com", UserRole.USER);
+        UUID requestId = UUID.randomUUID();
+        doThrow(new BusinessConflictException("Room is not available for the requested dates"))
+                .when(hotelServiceClient).confirmAvailability(eq(10L), any());
+
+        mockMvc.perform(createBookingRequest(user, request(requestId, 10L, START_DATE, END_DATE, false)))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.detail").value("Room is not available for the requested dates"));
+
+        Booking saved = bookingRepository.findByRequestId(requestId).orElseThrow();
+        assertThat(saved.getStatus()).isEqualTo(BookingStatus.CANCELLED);
+        verify(hotelServiceClient).release(eq(10L), org.mockito.ArgumentMatchers.argThat(
+                request -> request.reason() == ReleaseReason.COMPENSATION
+        ));
+    }
+
+    /**
+     * Проверяет отмену PENDING после недоступности confirm и успешного release.
+     *
+     * @throws Exception ошибка выполнения MockMvc-запроса
+     */
+    @Test
+    void shouldCancelPendingBookingAfterUnavailableConfirmAndSuccessfulRelease() throws Exception {
+        User user = createUser("user@example.com", UserRole.USER);
+        UUID requestId = UUID.randomUUID();
+        doThrow(new ServiceUnavailableException("Hotel Service is unavailable"))
+                .when(hotelServiceClient).confirmAvailability(eq(10L), any());
+
+        mockMvc.perform(createBookingRequest(user, request(requestId, 10L, START_DATE, END_DATE, false)))
+                .andExpect(status().isServiceUnavailable());
+
+        assertThat(bookingRepository.findByRequestId(requestId).orElseThrow().getStatus())
+                .isEqualTo(BookingStatus.CANCELLED);
+    }
+
+    /**
+     * Проверяет явную ошибку и сохранение PENDING при неуспешной компенсации.
+     *
+     * @throws Exception ошибка выполнения MockMvc-запроса
+     */
+    @Test
+    void shouldReportCompensationFailure() throws Exception {
+        User user = createUser("user@example.com", UserRole.USER);
+        UUID requestId = UUID.randomUUID();
+        doThrow(new ServiceUnavailableException("Hotel Service is unavailable"))
+                .when(hotelServiceClient).confirmAvailability(eq(10L), any());
+        doThrow(new ServiceUnavailableException("Hotel Service is unavailable"))
+                .when(hotelServiceClient).release(eq(10L), any());
+
+        mockMvc.perform(createBookingRequest(user, request(requestId, 10L, START_DATE, END_DATE, false)))
+                .andExpect(status().isServiceUnavailable())
+                .andExpect(jsonPath("$.detail").value(containsString("compensation failed")));
+
+        assertThat(bookingRepository.findByRequestId(requestId).orElseThrow().getStatus())
+                .isEqualTo(BookingStatus.PENDING);
     }
 
     /**
@@ -355,19 +467,42 @@ class BookingControllerIntegrationTest {
     }
 
     /**
-     * Проверяет, что CONFIRMED не отменяется локально без release в Hotel Service.
+     * Проверяет отмену CONFIRMED-брони после успешного release в Hotel Service.
      *
      * @throws Exception ошибка выполнения MockMvc-запроса
      */
     @Test
-    void shouldNotCancelConfirmedBookingWithoutHotelRelease() throws Exception {
+    void shouldCancelConfirmedBookingAfterHotelRelease() throws Exception {
         User owner = createUser("owner@example.com", UserRole.USER);
         Booking booking = createBooking(owner, BookingStatus.CONFIRMED);
 
         mockMvc.perform(delete("/booking/{id}", booking.getId()).with(userJwt(owner)))
+                .andExpect(status().isNoContent())
+                .andExpect(content().string(""));
+
+        assertThat(bookingRepository.findById(booking.getId()).orElseThrow().getStatus())
+                .isEqualTo(BookingStatus.CANCELLED);
+        verify(hotelServiceClient).release(eq(10L), org.mockito.ArgumentMatchers.argThat(
+                request -> request.reason() == ReleaseReason.USER_CANCELLATION
+        ));
+    }
+
+    /**
+     * Проверяет сохранение CONFIRMED при неуспешном release в Hotel Service.
+     *
+     * @throws Exception ошибка выполнения MockMvc-запроса
+     */
+    @Test
+    void shouldNotCancelConfirmedBookingWhenHotelReleaseFails() throws Exception {
+        User owner = createUser("owner@example.com", UserRole.USER);
+        Booking booking = createBooking(owner, BookingStatus.CONFIRMED);
+        doThrow(new ServiceUnavailableException("Hotel Service is unavailable"))
+                .when(hotelServiceClient).release(eq(10L), any());
+
+        mockMvc.perform(delete("/booking/{id}", booking.getId()).with(userJwt(owner)))
                 .andExpect(status().isServiceUnavailable())
                 .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_PROBLEM_JSON))
-                .andExpect(jsonPath("$.detail").value(containsString("Hotel Service release")));
+                .andExpect(jsonPath("$.detail").value(containsString("Hotel Service")));
 
         assertThat(bookingRepository.findById(booking.getId()).orElseThrow().getStatus())
                 .isEqualTo(BookingStatus.CONFIRMED);

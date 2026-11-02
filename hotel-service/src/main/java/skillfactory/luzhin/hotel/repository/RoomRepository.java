@@ -1,13 +1,16 @@
 package skillfactory.luzhin.hotel.repository;
 
+import jakarta.persistence.LockModeType;
 import org.springframework.data.domain.Sort;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Lock;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 import skillfactory.luzhin.hotel.entity.Room;
 
 import java.time.LocalDate;
 import java.util.List;
+import java.util.Optional;
 
 /**
  * Репозиторий номеров и запросов их доступности.
@@ -22,6 +25,16 @@ public interface RoomRepository extends JpaRepository<Room, Long> {
      * @return признак существования номера
      */
     boolean existsByHotelIdAndNumber(Long hotelId, String number);
+
+    /**
+     * Находит номер с эксклюзивной блокировкой для атомарного подтверждения.
+     *
+     * @param id идентификатор номера
+     * @return номер, если он существует
+     */
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("select room from Room room where room.id = :id")
+    Optional<Room> findByIdForUpdate(@Param("id") Long id);
 
     /**
      * Находит эксплуатационно доступные номера без активных пересечений по датам.

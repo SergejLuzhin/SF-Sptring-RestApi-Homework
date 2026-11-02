@@ -196,8 +196,17 @@ class SecurityIntegrationTest {
         String token = issueToken(TEST_SECRET, TEST_ISSUER, "INTERNAL", Instant.now(), Instant.now().plusSeconds(300));
 
         mockMvc.perform(post("/api/rooms/1/release")
-                        .header("Authorization", "Bearer " + token))
-                .andExpect(status().isNotFound());
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "bookingId": 25,
+                                  "requestId": "6a18c94f-f26b-4f3d-994d-665c49d8b51e",
+                                  "reason": "COMPENSATION"
+                                }
+                                """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("RELEASED"));
     }
 
     /**
