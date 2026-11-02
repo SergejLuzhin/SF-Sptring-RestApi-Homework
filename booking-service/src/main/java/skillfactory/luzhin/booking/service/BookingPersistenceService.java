@@ -72,37 +72,49 @@ public class BookingPersistenceService {
     }
 
     /**
-     * Переводит PENDING-бронь в CONFIRMED после успешного удалённого confirm.
+     * Условно переводит PENDING-бронь в CONFIRMED после успешного удалённого confirm.
      *
      * @param bookingId идентификатор бронирования
      * @return подтверждённая бронь
      */
     @Transactional
     public BookingResponse confirm(Long bookingId) {
+        bookingRepository.updateStatus(
+                bookingId,
+                BookingStatus.PENDING,
+                BookingStatus.CONFIRMED,
+                clock.instant()
+        );
         Booking booking = findBooking(bookingId);
         if (booking.getStatus() == BookingStatus.CANCELLED) {
             throw new BusinessConflictException("Cancelled booking cannot be confirmed");
         }
-        if (booking.getStatus() == BookingStatus.PENDING) {
-            booking.setStatus(BookingStatus.CONFIRMED);
-            booking.setUpdatedAt(clock.instant());
+        if (booking.getStatus() != BookingStatus.CONFIRMED) {
+            throw new BusinessConflictException("Booking confirmation conflicts with its current status");
         }
         return bookingMapper.toResponse(booking);
     }
 
     /**
-     * Переводит PENDING-бронь в CANCELLED после успешной компенсации.
+     * Условно переводит PENDING-бронь в CANCELLED после успешной компенсации.
      *
      * @param bookingId идентификатор бронирования
      */
     @Transactional
     public void cancelAfterCompensation(Long bookingId) {
+        bookingRepository.updateStatus(
+                bookingId,
+                BookingStatus.PENDING,
+                BookingStatus.CANCELLED,
+                clock.instant()
+        );
         Booking booking = findBooking(bookingId);
         if (booking.getStatus() == BookingStatus.CONFIRMED) {
             throw new BusinessConflictException("Confirmed booking cannot be cancelled as compensation");
         }
-        booking.setStatus(BookingStatus.CANCELLED);
-        booking.setUpdatedAt(clock.instant());
+        if (booking.getStatus() != BookingStatus.CANCELLED) {
+            throw new BusinessConflictException("Booking compensation conflicts with its current status");
+        }
     }
 
     /**
@@ -149,33 +161,51 @@ public class BookingPersistenceService {
     }
 
     /**
-     * Локально отменяет собственную PENDING-бронь.
+     * Условно отменяет собственную PENDING-бронь без изменения терминальных состояний.
      *
      * @param userId идентификатор пользователя
      * @param bookingId идентификатор бронирования
      */
     @Transactional
     public void cancelPending(Long userId, Long bookingId) {
+        bookingRepository.updateOwnedStatus(
+                bookingId,
+                userId,
+                BookingStatus.PENDING,
+                BookingStatus.CANCELLED,
+                clock.instant()
+        );
         Booking booking = findOwnedBooking(userId, bookingId);
         if (booking.getStatus() == BookingStatus.CONFIRMED) {
             throw new BusinessConflictException("Confirmed booking requires Hotel Service release");
         }
-        cancel(booking);
+        if (booking.getStatus() != BookingStatus.CANCELLED) {
+            throw new BusinessConflictException("Pending booking cancellation conflicts with its current status");
+        }
     }
 
     /**
-     * Завершает отмену CONFIRMED-брони после успешного удалённого release.
+     * Условно завершает отмену CONFIRMED-брони после удалённого release.
      *
      * @param userId идентификатор пользователя
      * @param bookingId идентификатор бронирования
      */
     @Transactional
     public void cancelConfirmed(Long userId, Long bookingId) {
+        bookingRepository.updateOwnedStatus(
+                bookingId,
+                userId,
+                BookingStatus.CONFIRMED,
+                BookingStatus.CANCELLED,
+                clock.instant()
+        );
         Booking booking = findOwnedBooking(userId, bookingId);
         if (booking.getStatus() == BookingStatus.PENDING) {
             throw new BusinessConflictException("Pending booking has no confirmed Hotel Service reservation");
         }
-        cancel(booking);
+        if (booking.getStatus() != BookingStatus.CANCELLED) {
+            throw new BusinessConflictException("Confirmed booking cancellation conflicts with its current status");
+        }
     }
 
     /**
@@ -196,18 +226,6 @@ public class BookingPersistenceService {
             throw new BusinessConflictException("requestId already exists with different parameters");
         }
         return bookingMapper.toResponse(booking);
-    }
-
-    /**
-     * Обновляет терминальное состояние и время изменения брони.
-     *
-     * @param booking отменяемая бронь
-     */
-    private void cancel(Booking booking) {
-        if (booking.getStatus() != BookingStatus.CANCELLED) {
-            booking.setStatus(BookingStatus.CANCELLED);
-            booking.setUpdatedAt(clock.instant());
-        }
     }
 
     /**

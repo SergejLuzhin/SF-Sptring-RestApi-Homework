@@ -38,3 +38,17 @@ security:
 admin:
   username: ${ADMIN_USERNAME:}
   password: ${ADMIN_PASSWORD:}
+
+hotel:
+  client:
+    base-url: http://hotel-service
+    connect-timeout: 2s
+    read-timeout: 3s
+    confirm:
+      max-attempts: 3
+      initial-backoff: 100ms
+      max-backoff: 500ms
+    release:
+      max-attempts: 4
+      initial-backoff: 100ms
+      max-backoff: 800ms

@@ -50,6 +50,12 @@ public class RoomReservationService {
 
         Room room = roomRepository.findByIdForUpdate(roomId)
                 .orElseThrow(() -> new ResourceNotFoundException("Room", roomId));
+        Optional<RoomReservation> existingAfterLock = findOperation(request.bookingId(), request.requestId());
+        if (existingAfterLock.isPresent()) {
+            RoomReservation reservation = existingAfterLock.get();
+            validateConfirmationMatch(reservation, roomId, request);
+            return toResponse(reservation);
+        }
         if (!room.isAvailable() || roomReservationRepository.existsOverlappingReservation(
                 roomId,
                 request.startDate(),
@@ -81,6 +87,7 @@ public class RoomReservationService {
      */
     @Transactional
     public RoomReservationResponse release(Long roomId, ReleaseReservationRequest request) {
+        roomRepository.findByIdForUpdate(roomId);
         Optional<RoomReservation> existing = findOperation(request.bookingId(), request.requestId());
         if (existing.isEmpty()) {
             return new RoomReservationResponse(request.bookingId(), roomId, RoomReservationStatus.RELEASED);

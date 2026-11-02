@@ -1,6 +1,8 @@
 package skillfactory.luzhin.booking.service;
 
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
 import skillfactory.luzhin.booking.dto.BookingCreateRequest;
 import skillfactory.luzhin.booking.dto.BookingResponse;
@@ -19,6 +21,7 @@ import java.util.UUID;
  * Координирует распределённое подтверждение, компенсацию и отмену бронирований.
  */
 @Service
+@Slf4j
 @RequiredArgsConstructor
 public class BookingService {
 
@@ -42,7 +45,14 @@ public class BookingService {
         }
 
         Long roomId = selectRoom(userToken, request);
-        BookingResponse pending = bookingPersistenceService.createPending(userId, request, roomId);
+        BookingResponse pending;
+        try {
+            pending = bookingPersistenceService.createPending(userId, request, roomId);
+        } catch (DataIntegrityViolationException exception) {
+            return bookingPersistenceService.findExistingBooking(userId, request)
+                    .map(booking -> new BookingCreationResult(booking, false))
+                    .orElseThrow(() -> exception);
+        }
         try {
             hotelServiceClient.confirmAvailability(roomId, new ConfirmAvailabilityRequest(
                     pending.id(),
@@ -137,6 +147,12 @@ public class BookingService {
             ));
             bookingPersistenceService.cancelAfterCompensation(pending.id());
         } catch (RuntimeException compensationFailure) {
+            log.error(
+                    "Booking compensation failed; bookingId={}, requestId={}",
+                    pending.id(),
+                    requestId,
+                    compensationFailure
+            );
             throw new ServiceUnavailableException("Hotel Service compensation failed; booking requires reconciliation");
         }
     }

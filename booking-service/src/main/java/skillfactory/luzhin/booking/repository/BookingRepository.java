@@ -1,8 +1,13 @@
 package skillfactory.luzhin.booking.repository;
 
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Modifying;
+import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
 import skillfactory.luzhin.booking.entity.Booking;
+import skillfactory.luzhin.booking.entity.BookingStatus;
 
+import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -36,6 +41,54 @@ public interface BookingRepository extends JpaRepository<Booking, Long> {
      * @return бронирование, если оно принадлежит пользователю
      */
     Optional<Booking> findByIdAndUserId(Long id, Long userId);
+
+    /**
+     * Изменяет статус только если бронь всё ещё находится в ожидаемом состоянии.
+     *
+     * @param bookingId идентификатор бронирования
+     * @param expectedStatus ожидаемый исходный статус
+     * @param targetStatus новый статус
+     * @param updatedAt время изменения
+     * @return число изменённых записей
+     */
+    @Modifying(flushAutomatically = true, clearAutomatically = true)
+    @Query("""
+            update Booking booking
+            set booking.status = :targetStatus, booking.updatedAt = :updatedAt
+            where booking.id = :bookingId and booking.status = :expectedStatus
+            """)
+    int updateStatus(
+            @Param("bookingId") Long bookingId,
+            @Param("expectedStatus") BookingStatus expectedStatus,
+            @Param("targetStatus") BookingStatus targetStatus,
+            @Param("updatedAt") Instant updatedAt
+    );
+
+    /**
+     * Изменяет статус собственной брони только из ожидаемого состояния.
+     *
+     * @param bookingId идентификатор бронирования
+     * @param userId идентификатор владельца
+     * @param expectedStatus ожидаемый исходный статус
+     * @param targetStatus новый статус
+     * @param updatedAt время изменения
+     * @return число изменённых записей
+     */
+    @Modifying(flushAutomatically = true, clearAutomatically = true)
+    @Query("""
+            update Booking booking
+            set booking.status = :targetStatus, booking.updatedAt = :updatedAt
+            where booking.id = :bookingId
+              and booking.user.id = :userId
+              and booking.status = :expectedStatus
+            """)
+    int updateOwnedStatus(
+            @Param("bookingId") Long bookingId,
+            @Param("userId") Long userId,
+            @Param("expectedStatus") BookingStatus expectedStatus,
+            @Param("targetStatus") BookingStatus targetStatus,
+            @Param("updatedAt") Instant updatedAt
+    );
 
     /**
      * Проверяет наличие истории бронирований пользователя.
