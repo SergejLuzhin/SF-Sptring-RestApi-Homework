@@ -25,6 +25,7 @@ import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -184,6 +185,88 @@ class RoomReservationControllerIntegrationTest {
 
         assertThat(roomReservationRepository.count()).isZero();
         assertThat(roomRepository.findById(room.getId()).orElseThrow().getTimesBooked()).isZero();
+    }
+
+    /**
+     * Проверяет отказ повторного confirm с изменёнными датами без изменения исходной блокировки.
+     *
+     * @throws Exception ошибка выполнения MockMvc-запроса
+     */
+    @Test
+    void shouldRejectConfirmationRetryWithDifferentParameters() throws Exception {
+        UUID requestId = UUID.randomUUID();
+        mockMvc.perform(confirm(room.getId(), 25L, requestId))
+                .andExpect(status().isOk());
+
+        mockMvc.perform(post("/api/rooms/{id}/confirm-availability", room.getId())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "bookingId": 25,
+                                  "requestId": "%s",
+                                  "startDate": "2026-11-11",
+                                  "endDate": "2026-11-16"
+                                }
+                                """.formatted(requestId)))
+                .andExpect(status().isConflict())
+                .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_PROBLEM_JSON))
+                .andExpect(jsonPath("$.detail").value(
+                        "Reservation identifiers or parameters do not match the original operation"
+                ));
+
+        assertThat(roomReservationRepository.count()).isEqualTo(1);
+        assertThat(roomRepository.findById(room.getId()).orElseThrow().getTimesBooked()).isEqualTo(1);
+    }
+
+    /**
+     * Проверяет, что release с другим roomId не освобождает исходную блокировку.
+     *
+     * @throws Exception ошибка выполнения MockMvc-запроса
+     */
+    @Test
+    void shouldRejectReleaseForDifferentRoom() throws Exception {
+        UUID requestId = UUID.randomUUID();
+        mockMvc.perform(confirm(room.getId(), 25L, requestId))
+                .andExpect(status().isOk());
+        Room anotherRoom = new Room();
+        anotherRoom.setHotel(room.getHotel());
+        anotherRoom.setNumber("102");
+        anotherRoom.setAvailable(true);
+        anotherRoom.setTimesBooked(0);
+        anotherRoom = roomRepository.saveAndFlush(anotherRoom);
+
+        mockMvc.perform(release(anotherRoom.getId(), 25L, requestId, "COMPENSATION"))
+                .andExpect(status().isConflict())
+                .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_PROBLEM_JSON))
+                .andExpect(jsonPath("$.detail").value(
+                        "Reservation identifiers or room do not match the original operation"
+                ));
+
+        assertThat(roomReservationRepository.findByBookingId(25L).orElseThrow().getStatus())
+                .isEqualTo(RoomReservationStatus.HELD);
+        assertThat(roomRepository.findById(room.getId()).orElseThrow().getTimesBooked()).isEqualTo(1);
+    }
+
+    /**
+     * Проверяет повторное использование номера новой операцией после компенсации.
+     *
+     * @throws Exception ошибка выполнения MockMvc-запроса
+     */
+    @Test
+    void shouldAllowNewConfirmationAfterCompensation() throws Exception {
+        UUID firstRequestId = UUID.randomUUID();
+        mockMvc.perform(confirm(room.getId(), 25L, firstRequestId))
+                .andExpect(status().isOk());
+        mockMvc.perform(release(room.getId(), 25L, firstRequestId, "COMPENSATION"))
+                .andExpect(status().isOk());
+
+        mockMvc.perform(confirm(room.getId(), 26L, UUID.randomUUID()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.bookingId").value(26))
+                .andExpect(jsonPath("$.status").value("HELD"));
+
+        assertThat(roomReservationRepository.count()).isEqualTo(2);
+        assertThat(roomRepository.findById(room.getId()).orElseThrow().getTimesBooked()).isEqualTo(1);
     }
 
     /**

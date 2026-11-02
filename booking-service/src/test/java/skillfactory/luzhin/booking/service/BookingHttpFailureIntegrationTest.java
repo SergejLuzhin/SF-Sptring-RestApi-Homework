@@ -308,6 +308,71 @@ class BookingHttpFailureIntegrationTest {
     }
 
     /**
+     * Проверяет возврат исходной брони без повторного удалённого confirm при последовательном повторе.
+     */
+    @Test
+    void shouldReturnOriginalBookingWithoutRepeatingRemoteConfirmation() {
+        UUID requestId = UUID.randomUUID();
+        startClient(
+                exchange -> {
+                    confirmCalls.incrementAndGet();
+                    respond(exchange, 200);
+                },
+                exchange -> {
+                    releaseCalls.incrementAndGet();
+                    respond(exchange, 200);
+                },
+                3,
+                1,
+                Duration.ofSeconds(1)
+        );
+
+        BookingCreationResult created = createBooking(requestId);
+        BookingCreationResult repeated = createBooking(requestId);
+
+        assertThat(created.created()).isTrue();
+        assertThat(repeated.created()).isFalse();
+        assertThat(repeated.response().id()).isEqualTo(created.response().id());
+        assertThat(repeated.response().status()).isEqualTo(BookingStatus.CONFIRMED);
+        assertThat(bookingRepository.count()).isEqualTo(1);
+        assertThat(confirmCalls).hasValue(1);
+        assertThat(releaseCalls).hasValue(0);
+    }
+
+    /**
+     * Проверяет компенсацию успешной удалённой блокировки при конфликте локального подтверждения.
+     */
+    @Test
+    void shouldCompensateAfterSuccessfulRemoteConfirmWhenLocalConfirmationFails() {
+        UUID requestId = UUID.randomUUID();
+        startClient(
+                exchange -> {
+                    confirmCalls.incrementAndGet();
+                    var booking = bookingRepository.findByRequestId(requestId).orElseThrow();
+                    booking.setStatus(BookingStatus.CANCELLED);
+                    bookingRepository.saveAndFlush(booking);
+                    respond(exchange, 200);
+                },
+                exchange -> {
+                    releaseCalls.incrementAndGet();
+                    respond(exchange, 200);
+                },
+                1,
+                1,
+                Duration.ofSeconds(1)
+        );
+
+        assertThatThrownBy(() -> createBooking(requestId))
+                .isInstanceOf(BusinessConflictException.class)
+                .hasMessageContaining("Cancelled booking cannot be confirmed");
+
+        assertThat(confirmCalls).hasValue(1);
+        assertThat(releaseCalls).hasValue(1);
+        assertThat(bookingRepository.findByRequestId(requestId).orElseThrow().getStatus())
+                .isEqualTo(BookingStatus.CANCELLED);
+    }
+
+    /**
      * Запускает HTTP-заглушку и создаёт Booking Service с реальными RestClient и транзакциями.
      *
      * @param confirmHandler обработчик confirm-availability
