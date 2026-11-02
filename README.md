@@ -343,3 +343,203 @@ HTTP-вызовы не выполняются внутри открытой тр
 | 404 | Отель, номер, пользователь или бронь не найдены |
 | 409 | Пересечение дат, нет свободных номеров, дубликат username, конфликт requestId или ограничение целостности |
 | 503 | Удалённый сервис недоступен после повторов либо согласованность не удалось восстановить компенсацией |
+
+## 10. Локальный запуск и проверка
+
+### 10.1. Требования
+
+- JDK 17 или новее, совместимый с Spring Boot 3.5; компиляция выполняется с `--release 17`.
+- Maven 3.9 или новее; Maven Wrapper в репозитории отсутствует.
+- Свободные порты 8761, 8080, 8081 и 8082.
+- Для примеров ниже — `curl`; утилита `jq` используется для извлечения JWT и идентификаторов из JSON.
+
+Обе H2-базы находятся в памяти: Hotel Service использует `hoteldb`, Booking Service — `bookingdb`. После перезапуска соответствующего приложения его данные удаляются.
+
+### 10.2. Конфигурация и запуск
+
+| Переменная | Назначение |
+|---|---|
+| `JWT_SECRET` | Общий секрет HS256 для Booking и Hotel, не менее 32 байт |
+| `JWT_ISSUER` | Общий ожидаемый издатель JWT, по умолчанию `booking-service` |
+| `ADMIN_USERNAME` | Имя начального ADMIN в Booking Service |
+| `ADMIN_PASSWORD` | Пароль начального ADMIN, не менее 8 символов |
+
+Локальный секрет по умолчанию предназначен только для учебного запуска. Для отдельного окружения нужно задать собственный `JWT_SECRET` и одинаковые `JWT_SECRET`/`JWT_ISSUER` в Booking и Hotel. Начальный ADMIN создаётся только если заданы обе переменные `ADMIN_USERNAME` и `ADMIN_PASSWORD`; без них администратора можно создать позже через существующего ADMIN.
+
+Собрать исполняемые JAR из корня репозитория:
+
+```bash
+mvn clean package
+```
+
+Запустить приложения в четырёх терминалах в указанном порядке. Экспорт переменных нужно повторить в каждом терминале, где они используются.
+
+Терминал 1 — Eureka Server:
+
+```bash
+mvn -pl eureka-server spring-boot:run
+```
+
+Терминал 2 — Hotel Service:
+
+```bash
+export JWT_SECRET='local-booking-service-jwt-secret-change-me-32-bytes'
+export JWT_ISSUER='booking-service'
+mvn -pl hotel-service spring-boot:run
+```
+
+Терминал 3 — Booking Service с начальным ADMIN:
+
+```bash
+export JWT_SECRET='local-booking-service-jwt-secret-change-me-32-bytes'
+export JWT_ISSUER='booking-service'
+export ADMIN_USERNAME='admin@example.com'
+export ADMIN_PASSWORD='localAdminPassword123'
+mvn -pl booking-service spring-boot:run
+```
+
+Терминал 4 — API Gateway:
+
+```bash
+mvn -pl api-gateway spring-boot:run
+```
+
+Вместо `spring-boot:run` можно запустить собранные JAR через `java -jar <module>/target/<module>-1.0-SNAPSHOT.jar`, передав те же переменные окружения. После запуска нужно дождаться регистрации Hotel и Booking в Eureka. Проверить готовность:
+
+```bash
+curl http://localhost:8761/actuator/health
+curl http://localhost:8081/actuator/health
+curl http://localhost:8082/actuator/health
+curl http://localhost:8080/actuator/health
+```
+
+Ожидаемый ответ каждого приложения: `{"status":"UP"}`. Реестр Eureka доступен по адресу `http://localhost:8761`.
+
+### 10.3. Swagger UI и OpenAPI
+
+Документация доступна напрямую в бизнес-сервисах без JWT:
+
+| Сервис | Swagger UI | OpenAPI JSON |
+|---|---|---|
+| Booking Service | `http://localhost:8082/swagger-ui.html` | `http://localhost:8082/v3/api-docs` |
+| Hotel Service | `http://localhost:8081/swagger-ui.html` | `http://localhost:8081/v3/api-docs` |
+
+В Swagger UI кнопка **Authorize** принимает JWT без префикса `Bearer`. Для публичных операций выбран сервер Gateway `http://localhost:8080`; также можно выбрать прямой адрес сервиса. Внутренние confirm/release выделены тегом **INTERNAL: занятость номеров**, требуют служебный JWT с ролью INTERNAL и имеют только сервер `http://localhost:8081`. Они не доступны через Gateway. Сам Gateway не содержит Swagger UI и не агрегирует схемы backend-сервисов.
+
+### 10.4. Пользовательский сценарий через Gateway
+
+Все бизнес-запросы ниже выполняются только через `http://localhost:8080`. Пример использует ADMIN, созданный переменными окружения выше.
+
+Задать базовый URL, зарегистрировать USER и получить его JWT:
+
+```bash
+BASE_URL='http://localhost:8080'
+
+USER_TOKEN=$(curl -sS -X POST "$BASE_URL/user/register" \
+  -H 'Content-Type: application/json' \
+  -d '{"username":"user@example.com","password":"password123"}' | jq -r '.accessToken')
+```
+
+Отдельный вход и выпуск нового часового JWT:
+
+```bash
+USER_TOKEN=$(curl -sS -X POST "$BASE_URL/user/auth" \
+  -H 'Content-Type: application/json' \
+  -d '{"username":"user@example.com","password":"password123"}' | jq -r '.accessToken')
+```
+
+Войти как ADMIN:
+
+```bash
+ADMIN_TOKEN=$(curl -sS -X POST "$BASE_URL/user/auth" \
+  -H 'Content-Type: application/json' \
+  -d '{"username":"admin@example.com","password":"localAdminPassword123"}' | jq -r '.accessToken')
+```
+
+Создать отель и номер:
+
+```bash
+HOTEL_ID=$(curl -sS -X POST "$BASE_URL/api/hotels" \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"Grand Hotel","address":"Moscow, Tverskaya 1"}' | jq -r '.id')
+
+ROOM_ID=$(curl -sS -X POST "$BASE_URL/api/rooms" \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d "{\"hotelId\":$HOTEL_ID,\"number\":\"101\",\"available\":true}" | jq -r '.id')
+```
+
+Получить отели, свободные и рекомендованные номера:
+
+```bash
+curl -sS "$BASE_URL/api/hotels" \
+  -H "Authorization: Bearer $USER_TOKEN" | jq
+
+curl -sS "$BASE_URL/api/rooms?startDate=2026-11-10&endDate=2026-11-15" \
+  -H "Authorization: Bearer $USER_TOKEN" | jq
+
+curl -sS "$BASE_URL/api/rooms/recommend?startDate=2026-11-10&endDate=2026-11-15" \
+  -H "Authorization: Bearer $USER_TOKEN" | jq
+```
+
+Создать бронирование с явным выбором номера:
+
+```bash
+BOOKING_RESPONSE=$(curl -sS -X POST "$BASE_URL/booking" \
+  -H "Authorization: Bearer $USER_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d "{\"requestId\":\"6a18c94f-f26b-4f3d-994d-665c49d8b51e\",\"roomId\":$ROOM_ID,\"startDate\":\"2026-11-10\",\"endDate\":\"2026-11-12\",\"autoSelect\":false}")
+
+echo "$BOOKING_RESPONSE" | jq
+BOOKING_ID=$(echo "$BOOKING_RESPONSE" | jq -r '.id')
+```
+
+Успешный ответ имеет код 201 и статус CONFIRMED. Повтор того же POST с тем же `requestId` и телом возвращает код 200 и исходную бронь без нового слота; изменение параметров при том же `requestId` даёт 409.
+
+Создать бронирование с автоподбором на непересекающиеся даты:
+
+```bash
+curl -sS -X POST "$BASE_URL/booking" \
+  -H "Authorization: Bearer $USER_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"requestId":"dc3e90c2-e767-46ed-b21c-c4a1a725c62a","roomId":null,"startDate":"2026-11-12","endDate":"2026-11-15","autoSelect":true}' | jq
+```
+
+Получить историю и конкретную бронь, затем отменить её:
+
+```bash
+curl -sS "$BASE_URL/bookings" \
+  -H "Authorization: Bearer $USER_TOKEN" | jq
+
+curl -sS "$BASE_URL/booking/$BOOKING_ID" \
+  -H "Authorization: Bearer $USER_TOKEN" | jq
+
+curl -i -X DELETE "$BASE_URL/booking/$BOOKING_ID" \
+  -H "Authorization: Bearer $USER_TOKEN"
+```
+
+Отмена возвращает 204. Повторный DELETE той же брони также возвращает 204, а последующий GET показывает статус CANCELLED.
+
+### 10.5. Автоматические тесты
+
+Из корня репозитория:
+
+```bash
+# Полная очистка, сборка и все проверки четырёх модулей
+mvn clean verify
+
+# Все тесты реактора
+mvn test
+
+# Тесты одного бизнес-сервиса с необходимыми родительскими модулями
+mvn -pl hotel-service -am test
+mvn -pl booking-service -am test
+
+# Только проверки OpenAPI и Swagger UI
+mvn -pl booking-service,hotel-service -am \
+  -Dtest=OpenApiDocumentationIntegrationTest \
+  -Dsurefire.failIfNoSpecifiedTests=false test
+```
+
+Правила границ транзакций описаны в разделе 6: PENDING фиксируется до HTTP-вызова, CONFIRMED — в отдельной локальной транзакции после ответа Hotel. По умолчанию connect timeout составляет 2 с, read timeout — 3 с; confirm выполняется максимум за 3 попытки, release — за 4. Повторы используют экспоненциальную задержку только для временных ошибок, а после сбоя confirm всегда предпринимается ограниченная компенсация release, включая тайм-аут с неизвестным результатом.

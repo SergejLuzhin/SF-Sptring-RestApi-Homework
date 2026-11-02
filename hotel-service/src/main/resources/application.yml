@@ -28,6 +28,13 @@ eureka:
     service-url:
       defaultZone: http://localhost:8761/eureka/
 
+springdoc:
+  default-consumes-media-type: application/json
+  default-produces-media-type: application/json
+  swagger-ui:
+    tags-sorter: alpha
+    operations-sorter: method
+
 management:
   endpoints:
     web:

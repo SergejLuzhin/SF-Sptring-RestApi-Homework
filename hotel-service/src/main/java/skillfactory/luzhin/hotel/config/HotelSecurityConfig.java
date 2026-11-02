@@ -57,7 +57,13 @@ public class HotelSecurityConfig {
                 .logout(AbstractHttpConfigurer::disable)
                 .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .authorizeHttpRequests(authorize -> authorize
-                        .requestMatchers("/actuator/health", "/actuator/info").permitAll()
+                        .requestMatchers(
+                                "/v3/api-docs/**",
+                                "/swagger-ui.html",
+                                "/swagger-ui/**",
+                                "/actuator/health",
+                                "/actuator/info"
+                        ).permitAll()
                         .requestMatchers(
                                 HttpMethod.POST,
                                 "/api/rooms/*/confirm-availability",

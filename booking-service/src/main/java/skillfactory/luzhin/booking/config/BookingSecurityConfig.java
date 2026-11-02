@@ -65,6 +65,9 @@ public class BookingSecurityConfig {
                         .requestMatchers(
                                 "/user/register",
                                 "/user/auth",
+                                "/v3/api-docs/**",
+                                "/swagger-ui.html",
+                                "/swagger-ui/**",
                                 "/actuator/health",
                                 "/actuator/info"
                         ).permitAll()

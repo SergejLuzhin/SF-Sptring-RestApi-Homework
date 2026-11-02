@@ -1,5 +1,7 @@
 package skillfactory.luzhin.hotel.dto;
 
+import io.swagger.v3.oas.annotations.media.Schema;
+
 /**
  * Представление отеля в ответах API.
  *
@@ -7,5 +9,10 @@ package skillfactory.luzhin.hotel.dto;
  * @param name название отеля
  * @param address адрес отеля
  */
-public record HotelResponse(Long id, String name, String address) {
+@Schema(description = "Отель в ответах API")
+public record HotelResponse(
+        @Schema(description = "Идентификатор отеля", example = "1") Long id,
+        @Schema(description = "Название отеля", example = "Grand Hotel") String name,
+        @Schema(description = "Адрес отеля", example = "Moscow, Tverskaya 1") String address
+) {
 }
