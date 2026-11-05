@@ -1,0 +1,39 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: api-gateway
+  cloud:
+    gateway:
+      server:
+        webflux:
+          discovery:
+            locator:
+              enabled: false
+          routes:
+            - id: hotel-service-public
+              uri: lb://hotel-service
+              predicates:
+                - Path=/api/hotels,/api/hotels/{hotelId},/api/rooms,/api/rooms/recommend,/api/rooms/{roomId}
+            - id: booking-service-public
+              uri: lb://booking-service
+              predicates:
+                - Path=/user,/user/register,/user/auth,/booking,/booking/{bookingId},/bookings
+
+logging:
+  pattern:
+    console: "%d{yyyy-MM-dd'T'HH:mm:ss.SSSXXX} %-5level [%thread] [correlationId=%X{correlationId:-}] %logger{36} - %msg%n"
+
+eureka:
+  client:
+    register-with-eureka: true
+    fetch-registry: true
+    service-url:
+      defaultZone: http://localhost:8761/eureka/
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
