@@ -84,11 +84,14 @@ SKIP_BUILD=1 ./scripts/start-local.sh
 - создание, просмотр, обновление и удаление отелей и номеров;
 - поиск свободных и рекомендованных номеров;
 - ручное и автоматическое бронирование, повтор последнего запроса, история, получение и отмена брони;
-- health всех сервисов и просмотр текущей сессии.
+- health всех сервисов и просмотр текущей сессии;
+- запуск всех автоматических тестов с единым HTML-отчётом — пункт 6 главного меню.
 
 Для каждой операции выводятся HTTP-метод, полный URL, замаскированный заголовок Authorization, тело запроса, статус и тело ответа. Пароли и полные JWT заменяются на `***`. После регистрации или входа токены USER и ADMIN сохраняются отдельно в памяти меню и автоматически подставляются в нужные запросы. Последние `hotelId`, `roomId`, `bookingId` и тело успешного бронирования также используются как значения по умолчанию.
 
 В большинстве полей можно нажать Enter, чтобы принять показанное значение. Для нового бронирования `requestId` генерируется автоматически, а пункт повторной отправки использует прежнее тело для демонстрации идемпотентности. Завершение меню через пункт `0` или `Ctrl+C` не останавливает сервисы.
+
+Пункт 6 запускает полный `mvn clean verify`, показывает прогон в терминале и создаёт `target/test-report/index.html`. Этот файл содержит итоговый статус, полный лог Maven и ссылки на подробные Surefire-отчёты модулей. Работающие сервисы останавливать не требуется.
 
 ### Альтернатива: запуск в четырёх терминалах
 
@@ -293,11 +296,19 @@ mvn -pl booking-service,hotel-service -am \
   -Dsurefire.failIfNoSpecifiedTests=false test
 ```
 
-Для полного прогона с формированием HTML-отчётов выполнить:
+Для полного прогона с единым HTML-отчётом и полным логом выполнить:
 
 ```bash
-mvn clean verify surefire-report:report
+./scripts/run-tests.sh
 ```
+
+Тот же прогон доступен из пункта 6 главного меню `api-menu.sh`. Скрипт выводит Maven-лог в терминал, сохраняет его в `target/test-report/test-run.log` и даже при ошибке формирует `target/test-report/index.html` со статусом прогона и ссылками на модульные отчёты. Открыть единый отчёт в macOS:
+
+```bash
+open target/test-report/index.html
+```
+
+Если нужен только стандартный Maven-прогон без общего HTML-файла, выполните `mvn clean verify surefire-report:report`.
 
 Успешный результат обозначается `BUILD SUCCESS`. Сейчас набор содержит 129 проверок: 68 в Hotel Service, 59 в Booking Service и 2 в API Gateway; в Eureka Server автотестов нет. Отчёты сохраняются в `target/`, который не включается в Git:
 
@@ -306,14 +317,6 @@ mvn clean verify surefire-report:report
 | Hotel Service | `hotel-service/target/reports/surefire.html` | `hotel-service/target/surefire-reports/` |
 | Booking Service | `booking-service/target/reports/surefire.html` | `booking-service/target/surefire-reports/` |
 | API Gateway | `api-gateway/target/reports/surefire.html` | `api-gateway/target/surefire-reports/` |
-
-HTML-файл можно открыть в браузере. В macOS для этого подходит команда:
-
-```bash
-open hotel-service/target/reports/surefire.html \
-  booking-service/target/reports/surefire.html \
-  api-gateway/target/reports/surefire.html
-```
 
 После уже выполненного `mvn test` или `mvn verify` HTML можно обновить без очистки каталогов командой `mvn surefire-report:report`. TXT-файлы содержат краткие результаты по классам, XML — машиночитаемые результаты каждой проверки. При падении теста ищите название класса, assertion и stack trace в консоли и в соответствующем TXT-файле.
 

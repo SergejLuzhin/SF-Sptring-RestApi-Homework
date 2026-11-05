@@ -515,6 +515,20 @@ booking_menu() {
     done
 }
 
+run_all_tests() {
+    local root_dir
+    local test_status
+
+    root_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+    printf '\nЗапускаются все автоматические тесты. Работающие сервисы останавливать не нужно.\n'
+    "$root_dir/scripts/run-tests.sh"
+    test_status=$?
+    if ((test_status != 0)); then
+        printf 'Прогон завершился с ошибкой. Подробности: target/test-report/index.html\n' >&2
+    fi
+    return "$test_status"
+}
+
 for command_name in curl jq; do
     if ! command -v "$command_name" >/dev/null 2>&1; then
         printf 'Не найдена обязательная команда: %s\n' "$command_name" >&2
@@ -538,6 +552,7 @@ while true; do
     printf '3. Бронирования\n'
     printf '4. Health всех сервисов\n'
     printf '5. Текущая сессия и адреса Swagger\n'
+    printf '6. Запустить все автотесты и сформировать HTML-отчёт\n'
     printf '0. Выход\n'
     if ! read -r -p 'Выберите раздел: ' choice; then
         printf '\nМеню завершено.\n'
@@ -549,6 +564,7 @@ while true; do
         3) booking_menu ;;
         4) check_health; pause ;;
         5) show_session; pause ;;
+        6) run_all_tests; pause ;;
         0) printf 'Меню завершено. Сервисы продолжают работать.\n'; exit 0 ;;
         *) printf 'Неизвестный пункт меню.\n' ;;
     esac
